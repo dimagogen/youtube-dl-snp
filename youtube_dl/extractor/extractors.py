@@ -944,6 +944,7 @@ from .webofstories import (
     WebOfStoriesPlaylistIE,
 )
 from .weibo import WeiboIE
+from .miaopai import MiaopaiIE
 from .weiqitv import WeiqiTVIE
 from .wimp import WimpIE
 from .wistia import WistiaIE
