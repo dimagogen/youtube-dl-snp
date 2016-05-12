@@ -945,6 +945,7 @@ from .webofstories import (
 )
 from .weibo import WeiboIE
 from .miaopai import MiaopaiIE
+from .xiaokaxiu import XiaokaxiuIE
 from .weiqitv import WeiqiTVIE
 from .wimp import WimpIE
 from .wistia import WistiaIE
