@@ -1,49 +1,103 @@
 # coding: utf-8
 from __future__ import unicode_literals
 
-import re
+from ..utils import (
+    sanitized_Request,
+    compat_urllib_request
+)
 
 from .common import InfoExtractor
 
 
-class WeiboIE(InfoExtractor):
-    """
-    The videos in Weibo come from different sites, this IE just finds the link
-    to the external video and returns it.
-    """
-    _VALID_URL = r'https?://video\.weibo\.com/v/weishipin/t_(?P<id>.+?)\.htm'
+class WeiboBaseInfoExtractor(InfoExtractor):
+    @staticmethod
+    def _build_mobile_request(url):
+        request = sanitized_Request(url)
 
-    _TEST = {
-        'url': 'http://video.weibo.com/v/weishipin/t_zjUw2kZ.htm',
+        request.add_header('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8')
+        request.add_header('Accept-Charset', 'UTF-8,*;q=0.5')
+        request.add_header('Accept-Encoding', 'gzip,deflate,sdch')
+        request.add_header('Accept-Language', 'en-US,en;q=0.8')
+        request.add_header('User-Agent',
+                           'Mozilla/5.0 (Linux; Android 4.4.2; Nexus 4 Build/KOT49H) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/34.0.1847.114 Mobile Safari/537.36')
+
+        return request
+
+    def _download_mobile_webpage(self, url, *args, **kwargs):
+        request = self._build_mobile_request(url)
+
+        return self._download_webpage(request, *args, **kwargs)
+
+    def _download_page(self, url, name):
+        self.report_download_webpage(name)
+        try:
+            request = compat_urllib_request.Request(url)
+            response = compat_urllib_request.urlopen(request)
+
+            data = response.read()
+            data = data.decode('utf-8')
+
+            return data
+        except Exception:
+            return None
+
+
+class WeiboIE(WeiboBaseInfoExtractor):
+    _VALID_URL = r'https?://(www\.|)(video\.|)weibo\.com/(show\?fid=(?P<show>\d{4}:\w{32})\w*|p/230444(?P<id>\w+))'
+
+    _TESTS = [{
+        'url': 'http://video.weibo.com/show?fid=1034:4fb153c58d835edacee289ebcecd1230',
         'info_dict': {
-            'id': '98322879',
-            'ext': 'flv',
-            'title': '魔声耳机最新广告“All Eyes On Us”',
+            'id': '1034:4fb153c58d835edacee289ebcecd1230',
+            'title': 'weibo',
+            'url': 're:^http://us.sinaimg.cn/002P26pijx06QWAy4VNt01040100rXqT0k01.mp4',
+            'description': '那么问题来了，这么好的东西在哪里可以买到呢？[doge]',
+            'ext': 'mp4',
         },
         'params': {
             'skip_download': True,
         },
-        'add_ie': ['Sina'],
-    }
+    },
+        {
+            'url': 'http://weibo.com/p/2304441bb617415f2b107356e13b60df83fbb5',
+            'info_dict': {
+                'id': '1bb617415f2b107356e13b60df83fbb5',
+                'url': 're:^http://us.sinaimg.cn/004Dr2Rfjx070XbnbRT205040100CZW10k01.mp4',
+                'description': '#曼联足球俱乐部# 2015/16赛季最佳U21球员，现已接受投票！ 点击投票 http://www.manutd.com/en/poty 候选名单 http://www.manunited.com.cn/zh-CN/NewsAndFeatures/FootballNews/2016/Apr/VOTE-FOR-MANCHESTER-UNITEDS-201516-AWARDS.aspx',
+                'ext': 'mp4',
+                'title': 'weibo',
+            },
+            'params': {
+                'skip_download': True,
+            },
+        },
+    ]
 
     # Additional example videos from different sites
-    # Youku: http://video.weibo.com/v/weishipin/t_zQGDWQ8.htm
-    # 56.com: http://video.weibo.com/v/weishipin/t_zQ44HxN.htm
+    # http://video.weibo.com/show?fid=1034:4fb153c58d835edacee289ebcecd1230
+    # http://www.weibo.com/p/2304444fb153c58d835edacee289ebcecd1230
+    def _real_extract(self, weibo_url):
+        url = weibo_url
+        identifier = self._match_id(weibo_url)
 
-    def _real_extract(self, url):
-        mobj = re.match(self._VALID_URL, url, flags=re.VERBOSE)
-        video_id = mobj.group('id')
-        info_url = 'http://video.weibo.com/?s=v&a=play_list&format=json&mix_video_id=t_%s' % video_id
-        info = self._download_json(info_url, video_id)
+        if identifier:
+            url = 'http://video.weibo.com/show?fid=1034:{0}'.format(identifier)
+        else:
+            identifier = self._search_regex(self._VALID_URL, url, 'identifier', group='show')
 
-        videos_urls = map(lambda v: v['play_page_url'], info['result']['data'])
-        # Prefer sina video since they have thumbnails
-        videos_urls = sorted(videos_urls, key=lambda u: 'video.sina.com' in u)
-        player_url = videos_urls[-1]
-        m_sina = re.match(r'https?://video\.sina\.com\.cn/v/b/(\d+)-\d+\.html',
-                          player_url)
-        if m_sina is not None:
-            self.to_screen('Sina video detected')
-            sina_id = m_sina.group(1)
-            player_url = 'http://you.video.sina.com.cn/swf/quotePlayer.swf?vid=%s' % sina_id
-        return self.url_result(player_url)
+        url += '&type=mp4'
+
+        mobile_page = self._download_mobile_webpage(url, identifier)
+
+        video_url = self._html_search_regex(r'<video src="(.*?)\"\W', mobile_page, 'video_url', fatal=True)
+
+        page = self._download_page(url, 'Title')
+
+        title = self._html_search_meta('description', page, 'title', fatal=False)
+
+        return {
+            'id': identifier,
+            'title': 'weibo',
+            'url': video_url,
+            'description': title
+        }
