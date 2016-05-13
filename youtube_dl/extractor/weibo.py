@@ -1,9 +1,12 @@
 # coding: utf-8
 from __future__ import unicode_literals
 
+import urlparse
+
 from ..utils import (
+    ExtractorError,
     sanitized_Request,
-    compat_urllib_request
+    compat_urllib_request,
 )
 
 from .common import InfoExtractor
@@ -41,9 +44,21 @@ class WeiboBaseInfoExtractor(InfoExtractor):
         except Exception:
             return None
 
+    @staticmethod
+    def _parse_url_from_weibo_passport(passport_url):
+        parts = urlparse.urlsplit(passport_url)
+        query_info = urlparse.parse_qs(
+            qs=parts.query,
+            keep_blank_values=True
+        )
+        try:
+            return query_info['url'][0]
+        except (Exception, KeyError):
+            return None
+
 
 class WeiboIE(WeiboBaseInfoExtractor):
-    _VALID_URL = r'https?://(www\.|)(video\.|)weibo\.com/(show\?fid=(?P<show>\d{4}:\w{32})\w*|p/230444(?P<id>\w+))'
+    _VALID_URL = r'https?://(www\.|)(?P<type>(video\.|passport\.|))weibo\.com/(show\?fid=(?P<show>\d{4}:\w{32})\w*|p/230444(?P<id>\w+)|visitor)'
 
     _TESTS = [{
         'url': 'http://video.weibo.com/show?fid=1034:4fb153c58d835edacee289ebcecd1230',
@@ -76,14 +91,30 @@ class WeiboIE(WeiboBaseInfoExtractor):
     # Additional example videos from different sites
     # http://video.weibo.com/show?fid=1034:4fb153c58d835edacee289ebcecd1230
     # http://www.weibo.com/p/2304444fb153c58d835edacee289ebcecd1230
+    # http://t.cn/Rqa5U43
     def _real_extract(self, weibo_url):
         url = weibo_url
-        identifier = self._match_id(weibo_url)
+
+        is_passport = self._search_regex(
+            pattern=self._VALID_URL,
+            string=weibo_url,
+            name='Type',
+            group='type'
+        )
+        is_passport = is_passport[:-1] == 'passport'
+
+        if is_passport:
+            url = self._parse_url_from_weibo_passport(weibo_url)
+
+            if url is None:
+                raise ExtractorError('Unable to extract weibo url from passport')
+
+        identifier = self._match_id(url)
 
         if identifier:
             url = 'http://video.weibo.com/show?fid=1034:{0}'.format(identifier)
         else:
-            identifier = self._search_regex(self._VALID_URL, url, 'identifier', group='show')
+            identifier = self._search_regex(self._VALID_URL, url, 'identifier', group='show', fatal=True)
 
         url += '&type=mp4'
 
