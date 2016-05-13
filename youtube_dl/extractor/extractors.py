@@ -610,6 +610,7 @@ from .qqmusic import (
     QQMusicToplistIE,
     QQMusicPlaylistIE,
 )
+from .qqvideo import QQVideoIE
 from .r7 import R7IE
 from .radiode import RadioDeIE
 from .radiojavan import RadioJavanIE
