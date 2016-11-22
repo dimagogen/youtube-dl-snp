@@ -15,7 +15,6 @@ class QQVideoIE(InfoExtractor):
         'info_dict': {
             'id': 'e0179tn8eg3',
             'ext': 'mp4',
-            'url': 're:^http://203.205.149.37/vhot2.qqvideo.tc.qq.com//e0179tn8eg3.p703.1.mp4',
             'title': 'qqvideo',
         },
         'params': {
