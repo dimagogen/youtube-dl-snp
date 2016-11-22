@@ -5,6 +5,7 @@ import re
 from .common import InfoExtractor
 from ..compat import (
     compat_HTTPError,
+    compat_str,
     compat_urllib_request,
     compat_urlparse,
 )
@@ -142,7 +143,9 @@ class UdemyIE(InfoExtractor):
             self._LOGIN_URL, None, 'Downloading login popup')
 
         def is_logged(webpage):
-            return any(p in webpage for p in ['href="https://www.udemy.com/user/logout/', '>Logout<'])
+            return any(re.search(p, webpage) for p in (
+                r'href=["\'](?:https://www\.udemy\.com)?/user/logout/',
+                r'>Logout<'))
 
         # already logged in
         if is_logged(login_popup):
@@ -205,7 +208,7 @@ class UdemyIE(InfoExtractor):
             if youtube_url:
                 return self.url_result(youtube_url, 'Youtube')
 
-        video_id = asset['id']
+        video_id = compat_str(asset['id'])
         thumbnail = asset.get('thumbnail_url') or asset.get('thumbnailUrl')
         duration = float_or_none(asset.get('data', {}).get('duration'))
 
@@ -305,7 +308,7 @@ class UdemyIE(InfoExtractor):
 
 class UdemyCourseIE(UdemyIE):
     IE_NAME = 'udemy:course'
-    _VALID_URL = r'https?://www\.udemy\.com/(?P<id>[^/?#&]+)'
+    _VALID_URL = r'https?://(?:www\.)?udemy\.com/(?P<id>[^/?#&]+)'
     _TESTS = []
 
     @classmethod

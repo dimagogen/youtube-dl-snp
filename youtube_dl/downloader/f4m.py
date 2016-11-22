@@ -23,26 +23,38 @@ from ..utils import (
 )
 
 
+class DataTruncatedError(Exception):
+    pass
+
+
 class FlvReader(io.BytesIO):
     """
     Reader for Flv files
     The file format is documented in https://www.adobe.com/devnet/f4v.html
     """
 
+    def read_bytes(self, n):
+        data = self.read(n)
+        if len(data) < n:
+            raise DataTruncatedError(
+                'FlvReader error: need %d bytes while only %d bytes got' % (
+                    n, len(data)))
+        return data
+
     # Utility functions for reading numbers and strings
     def read_unsigned_long_long(self):
-        return compat_struct_unpack('!Q', self.read(8))[0]
+        return compat_struct_unpack('!Q', self.read_bytes(8))[0]
 
     def read_unsigned_int(self):
-        return compat_struct_unpack('!I', self.read(4))[0]
+        return compat_struct_unpack('!I', self.read_bytes(4))[0]
 
     def read_unsigned_char(self):
-        return compat_struct_unpack('!B', self.read(1))[0]
+        return compat_struct_unpack('!B', self.read_bytes(1))[0]
 
     def read_string(self):
         res = b''
         while True:
-            char = self.read(1)
+            char = self.read_bytes(1)
             if char == b'\x00':
                 break
             res += char
@@ -53,18 +65,18 @@ class FlvReader(io.BytesIO):
         Read a box and return the info as a tuple: (box_size, box_type, box_data)
         """
         real_size = size = self.read_unsigned_int()
-        box_type = self.read(4)
+        box_type = self.read_bytes(4)
         header_end = 8
         if size == 1:
             real_size = self.read_unsigned_long_long()
             header_end = 16
-        return real_size, box_type, self.read(real_size - header_end)
+        return real_size, box_type, self.read_bytes(real_size - header_end)
 
     def read_asrt(self):
         # version
         self.read_unsigned_char()
         # flags
-        self.read(3)
+        self.read_bytes(3)
         quality_entry_count = self.read_unsigned_char()
         # QualityEntryCount
         for i in range(quality_entry_count):
@@ -85,7 +97,7 @@ class FlvReader(io.BytesIO):
         # version
         self.read_unsigned_char()
         # flags
-        self.read(3)
+        self.read_bytes(3)
         # time scale
         self.read_unsigned_int()
 
@@ -119,7 +131,7 @@ class FlvReader(io.BytesIO):
         # version
         self.read_unsigned_char()
         # flags
-        self.read(3)
+        self.read_bytes(3)
 
         self.read_unsigned_int()  # BootstrapinfoVersion
         # Profile,Live,Update,Reserved
@@ -184,6 +196,11 @@ def build_fragments_list(boot_info):
     first_frag_number = fragment_run_entry_table[0]['first']
     fragments_counter = itertools.count(first_frag_number)
     for segment, fragments_count in segment_run_table['segment_run']:
+        # In some live HDS streams (for example Rai), `fragments_count` is
+        # abnormal and causing out-of-memory errors. It's OK to change the
+        # number of fragments for live streams as they are updated periodically
+        if fragments_count == 4294967295 and boot_info['live']:
+            fragments_count = 2
         for _ in range(fragments_count):
             res.append((segment, next(fragments_counter)))
 
@@ -297,7 +314,8 @@ class F4mFD(FragmentFD):
         man_url = info_dict['url']
         requested_bitrate = info_dict.get('tbr')
         self.to_screen('[%s] Downloading f4m manifest' % self.FD_NAME)
-        urlh = self.ydl.urlopen(man_url)
+
+        urlh = self.ydl.urlopen(self._prepare_url(info_dict, man_url))
         man_url = urlh.geturl()
         # Some manifests may be malformed, e.g. prosiebensat1 generated manifests
         # (see https://github.com/rg3/youtube-dl/issues/6215#issuecomment-121704244
@@ -307,7 +325,7 @@ class F4mFD(FragmentFD):
         doc = compat_etree_fromstring(manifest)
         formats = [(int(f.attrib.get('bitrate', -1)), f)
                    for f in self._get_unencrypted_media(doc)]
-        if requested_bitrate is None:
+        if requested_bitrate is None or len(formats) == 1:
             # get the best format
             formats = sorted(formats, key=lambda f: f[0])
             rate, media = formats[-1]
@@ -317,7 +335,11 @@ class F4mFD(FragmentFD):
 
         base_url = compat_urlparse.urljoin(man_url, media.attrib['url'])
         bootstrap_node = doc.find(_add_ns('bootstrapInfo'))
-        boot_info, bootstrap_url = self._parse_bootstrap_node(bootstrap_node, base_url)
+        # From Adobe F4M 3.0 spec:
+        # The <baseURL> element SHALL be the base URL for all relative
+        # (HTTP-based) URLs in the manifest. If <baseURL> is not present, said
+        # URLs should be relative to the location of the containing document.
+        boot_info, bootstrap_url = self._parse_bootstrap_node(bootstrap_node, man_url)
         live = boot_info['live']
         metadata_node = media.find(_add_ns('metadata'))
         if metadata_node is not None:
@@ -366,7 +388,10 @@ class F4mFD(FragmentFD):
             url_parsed = base_url_parsed._replace(path=base_url_parsed.path + name, query='&'.join(query))
             frag_filename = '%s-%s' % (ctx['tmpfilename'], name)
             try:
-                success = ctx['dl'].download(frag_filename, {'url': url_parsed.geturl()})
+                success = ctx['dl'].download(frag_filename, {
+                    'url': url_parsed.geturl(),
+                    'http_headers': info_dict.get('http_headers'),
+                })
                 if not success:
                     return False
                 (down, frag_sanitized) = sanitize_open(frag_filename, 'rb')
@@ -374,7 +399,17 @@ class F4mFD(FragmentFD):
                 down.close()
                 reader = FlvReader(down_data)
                 while True:
-                    _, box_type, box_data = reader.read_box_info()
+                    try:
+                        _, box_type, box_data = reader.read_box_info()
+                    except DataTruncatedError:
+                        if test:
+                            # In tests, segments may be truncated, and thus
+                            # FlvReader may not be able to parse the whole
+                            # chunk. If so, write the segment as is
+                            # See https://github.com/rg3/youtube-dl/issues/9214
+                            dest_stream.write(down_data)
+                            break
+                        raise
                     if box_type == b'mdat':
                         dest_stream.write(box_data)
                         break

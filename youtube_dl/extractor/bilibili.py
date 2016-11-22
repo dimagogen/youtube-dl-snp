@@ -1,110 +1,125 @@
 # coding: utf-8
 from __future__ import unicode_literals
 
+import hashlib
 import re
 
 from .common import InfoExtractor
-from ..compat import compat_str
+from ..compat import compat_parse_qs
 from ..utils import (
     int_or_none,
-    unescapeHTML,
-    ExtractorError,
-    xpath_text,
+    float_or_none,
+    unified_timestamp,
+    urlencode_postdata,
 )
 
 
 class BiliBiliIE(InfoExtractor):
-    _VALID_URL = r'https?://www\.bilibili\.(?:tv|com)/video/av(?P<id>\d+)(?:/index_(?P<page_num>\d+).html)?'
+    _VALID_URL = r'https?://(?:www\.|bangumi\.|)bilibili\.(?:tv|com)/(?:video/av|anime/v/)(?P<id>\d+)'
 
-    _TESTS = [{
+    _TEST = {
         'url': 'http://www.bilibili.tv/video/av1074402/',
-        'md5': '2c301e4dab317596e837c3e7633e7d86',
+        'md5': '9fa226fe2b8a9a4d5a69b4c6a183417e',
         'info_dict': {
-            'id': '1554319',
-            'ext': 'flv',
+            'id': '1074402',
+            'ext': 'mp4',
             'title': '【金坷垃】金泡沫',
-            'duration': 308313,
+            'description': 'md5:ce18c2a2d2193f0df2917d270f2e5923',
+            'duration': 308.315,
+            'timestamp': 1398012660,
             'upload_date': '20140420',
             'thumbnail': 're:^https?://.+\.jpg',
-            'description': 'md5:ce18c2a2d2193f0df2917d270f2e5923',
-            'timestamp': 1397983878,
             'uploader': '菊子桑',
+            'uploader_id': '156160',
         },
-    }, {
-        'url': 'http://www.bilibili.com/video/av1041170/',
-        'info_dict': {
-            'id': '1041170',
-            'title': '【BD1080P】刀语【诸神&异域】',
-            'description': '这是个神奇的故事~每个人不留弹幕不给走哦~切利哦！~',
-            'uploader': '枫叶逝去',
-            'timestamp': 1396501299,
-        },
-        'playlist_count': 9,
-    }]
+    }
+
+    _APP_KEY = '6f90a59ac58a4123'
+    _BILIBILI_KEY = '0bfd84cc3940035173f35e6777508326'
 
     def _real_extract(self, url):
-        mobj = re.match(self._VALID_URL, url)
-        video_id = mobj.group('id')
-        page_num = mobj.group('page_num') or '1'
+        video_id = self._match_id(url)
+        webpage = self._download_webpage(url, video_id)
 
-        view_data = self._download_json(
-            'http://api.bilibili.com/view?type=json&appkey=8e9fc618fbd41e28&id=%s&page=%s' % (video_id, page_num),
-            video_id)
-        if 'error' in view_data:
-            raise ExtractorError('%s said: %s' % (self.IE_NAME, view_data['error']), expected=True)
+        if 'anime/v' not in url:
+            cid = compat_parse_qs(self._search_regex(
+                [r'EmbedPlayer\([^)]+,\s*"([^"]+)"\)',
+                 r'<iframe[^>]+src="https://secure\.bilibili\.com/secure,([^"]+)"'],
+                webpage, 'player parameters'))['cid'][0]
+        else:
+            js = self._download_json(
+                'http://bangumi.bilibili.com/web_api/get_source', video_id,
+                data=urlencode_postdata({'episode_id': video_id}),
+                headers={'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'})
+            cid = js['result']['cid']
 
-        cid = view_data['cid']
-        title = unescapeHTML(view_data['title'])
+        payload = 'appkey=%s&cid=%s&otype=json&quality=2&type=mp4' % (self._APP_KEY, cid)
+        sign = hashlib.md5((payload + self._BILIBILI_KEY).encode('utf-8')).hexdigest()
 
-        doc = self._download_xml(
-            'http://interface.bilibili.com/v_cdn_play?appkey=8e9fc618fbd41e28&cid=%s' % cid,
-            cid,
-            'Downloading page %s/%s' % (page_num, view_data['pages'])
-        )
-
-        if xpath_text(doc, './result') == 'error':
-            raise ExtractorError('%s said: %s' % (self.IE_NAME, xpath_text(doc, './message')), expected=True)
+        video_info = self._download_json(
+            'http://interface.bilibili.com/playurl?%s&sign=%s' % (payload, sign),
+            video_id, note='Downloading video info page')
 
         entries = []
 
-        for durl in doc.findall('./durl'):
-            size = xpath_text(durl, ['./filesize', './size'])
+        for idx, durl in enumerate(video_info['durl']):
             formats = [{
-                'url': durl.find('./url').text,
-                'filesize': int_or_none(size),
-                'ext': 'flv',
+                'url': durl['url'],
+                'filesize': int_or_none(durl['size']),
             }]
-            backup_urls = durl.find('./backup_url')
-            if backup_urls is not None:
-                for backup_url in backup_urls.findall('./url'):
-                    formats.append({'url': backup_url.text})
-            formats.reverse()
+            for backup_url in durl.get('backup_url', []):
+                formats.append({
+                    'url': backup_url,
+                    # backup URLs have lower priorities
+                    'preference': -2 if 'hd.mp4' in backup_url else -3,
+                })
+
+            self._sort_formats(formats)
 
             entries.append({
-                'id': '%s_part%s' % (cid, xpath_text(durl, './order')),
-                'title': title,
-                'duration': int_or_none(xpath_text(durl, './length'), 1000),
+                'id': '%s_part%s' % (video_id, idx),
+                'duration': float_or_none(durl.get('length'), 1000),
                 'formats': formats,
             })
 
+        title = self._html_search_regex('<h1[^>]+title="([^"]+)">', webpage, 'title')
+        description = self._html_search_meta('description', webpage)
+        timestamp = unified_timestamp(self._html_search_regex(
+            r'<time[^>]+datetime="([^"]+)"', webpage, 'upload time', fatal=False))
+        thumbnail = self._html_search_meta(['og:image', 'thumbnailUrl'], webpage)
+
+        # TODO 'view_count' requires deobfuscating Javascript
         info = {
-            'id': compat_str(cid),
+            'id': video_id,
             'title': title,
-            'description': view_data.get('description'),
-            'thumbnail': view_data.get('pic'),
-            'uploader': view_data.get('author'),
-            'timestamp': int_or_none(view_data.get('created')),
-            'view_count': int_or_none(view_data.get('play')),
-            'duration': int_or_none(xpath_text(doc, './timelength')),
+            'description': description,
+            'timestamp': timestamp,
+            'thumbnail': thumbnail,
+            'duration': float_or_none(video_info.get('timelength'), scale=1000),
         }
 
+        uploader_mobj = re.search(
+            r'<a[^>]+href="https?://space\.bilibili\.com/(?P<id>\d+)"[^>]+title="(?P<name>[^"]+)"',
+            webpage)
+        if uploader_mobj:
+            info.update({
+                'uploader': uploader_mobj.group('name'),
+                'uploader_id': uploader_mobj.group('id'),
+            })
+
+        for entry in entries:
+            entry.update(info)
+
         if len(entries) == 1:
-            entries[0].update(info)
             return entries[0]
         else:
-            info.update({
+            for idx, entry in enumerate(entries):
+                entry['id'] = '%s_part%d' % (video_id, (idx + 1))
+
+            return {
                 '_type': 'multi_video',
                 'id': video_id,
+                'title': title,
+                'description': description,
                 'entries': entries,
-            })
-            return info
+            }

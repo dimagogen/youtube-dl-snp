@@ -1,11 +1,23 @@
 # coding: utf-8
 from __future__ import unicode_literals
 
+import re
+
 from .common import InfoExtractor
-from ..utils import parse_iso8601
+from ..utils import (
+    parse_iso8601,
+    unescapeHTML,
+)
 
 
-class PeriscopeIE(InfoExtractor):
+class PeriscopeBaseIE(InfoExtractor):
+    def _call_api(self, method, query, item_id):
+        return self._download_json(
+            'https://api.periscope.tv/api/v2/%s' % method,
+            item_id, query=query)
+
+
+class PeriscopeIE(PeriscopeBaseIE):
     IE_DESC = 'Periscope'
     IE_NAME = 'periscope'
     _VALID_URL = r'https?://(?:www\.)?periscope\.tv/[^/]+/(?P<id>[^/?#]+)'
@@ -31,19 +43,26 @@ class PeriscopeIE(InfoExtractor):
         'only_matching': True,
     }]
 
-    def _call_api(self, method, value):
-        return self._download_json(
-            'https://api.periscope.tv/api/v2/%s?broadcast_id=%s' % (method, value), value)
+    @staticmethod
+    def _extract_url(webpage):
+        mobj = re.search(
+            r'<iframe[^>]+src=([\'"])(?P<url>(?:https?:)?//(?:www\.)?periscope\.tv/(?:(?!\1).)+)\1', webpage)
+        if mobj:
+            return mobj.group('url')
 
     def _real_extract(self, url):
         token = self._match_id(url)
 
-        broadcast_data = self._call_api('getBroadcastPublic', token)
+        broadcast_data = self._call_api(
+            'getBroadcastPublic', {'broadcast_id': token}, token)
         broadcast = broadcast_data['broadcast']
         status = broadcast['status']
 
-        uploader = broadcast.get('user_display_name') or broadcast_data.get('user', {}).get('display_name')
-        uploader_id = broadcast.get('user_id') or broadcast_data.get('user', {}).get('id')
+        user = broadcast_data.get('user', {})
+
+        uploader = broadcast.get('user_display_name') or user.get('display_name')
+        uploader_id = (broadcast.get('username') or user.get('username') or
+                       broadcast.get('user_id') or user.get('id'))
 
         title = '%s - %s' % (uploader, status) if uploader else status
         state = broadcast.get('state').lower()
@@ -55,7 +74,8 @@ class PeriscopeIE(InfoExtractor):
             'url': broadcast[image],
         } for image in ('image_url', 'image_url_small') if broadcast.get(image)]
 
-        stream = self._call_api('getAccessPublic', token)
+        stream = self._call_api(
+            'getAccessPublic', {'broadcast_id': token}, token)
 
         formats = []
         for format_id in ('replay', 'rtmp', 'hls', 'https_hls'):
@@ -67,7 +87,7 @@ class PeriscopeIE(InfoExtractor):
                 'ext': 'flv' if format_id == 'rtmp' else 'mp4',
             }
             if format_id != 'rtmp':
-                f['protocol'] = 'm3u8_native' if state == 'ended' else 'm3u8'
+                f['protocol'] = 'm3u8_native' if state in ('ended', 'timed_out') else 'm3u8'
             formats.append(f)
         self._sort_formats(formats)
 
@@ -82,8 +102,8 @@ class PeriscopeIE(InfoExtractor):
         }
 
 
-class PeriscopeUserIE(InfoExtractor):
-    _VALID_URL = r'https?://www\.periscope\.tv/(?P<id>[^/]+)/?$'
+class PeriscopeUserIE(PeriscopeBaseIE):
+    _VALID_URL = r'https?://(?:www\.)?periscope\.tv/(?P<id>[^/]+)/?$'
     IE_DESC = 'Periscope user videos'
     IE_NAME = 'periscope:user'
 
@@ -92,6 +112,7 @@ class PeriscopeUserIE(InfoExtractor):
         'info_dict': {
             'id': 'LularoeHusbandMike',
             'title': 'LULAROE HUSBAND MIKE',
+            'description': 'md5:6cf4ec8047768098da58e446e82c82f0',
         },
         # Periscope only shows videos in the last 24 hours, so it's possible to
         # get 0 videos
@@ -99,20 +120,34 @@ class PeriscopeUserIE(InfoExtractor):
     }
 
     def _real_extract(self, url):
-        user_id = self._match_id(url)
+        user_name = self._match_id(url)
 
-        webpage = self._download_webpage(url, user_id)
+        webpage = self._download_webpage(url, user_name)
 
-        broadcast_data = self._parse_json(self._html_search_meta(
-            'broadcast-data', webpage, default='{}'), user_id)
-        username = broadcast_data.get('user', {}).get('display_name')
-        user_broadcasts = self._parse_json(
-            self._html_search_meta('user-broadcasts', webpage, default='{}'),
-            user_id)
+        data_store = self._parse_json(
+            unescapeHTML(self._search_regex(
+                r'data-store=(["\'])(?P<data>.+?)\1',
+                webpage, 'data store', default='{}', group='data')),
+            user_name)
+
+        user = list(data_store['UserCache']['users'].values())[0]['user']
+        user_id = user['id']
+        session_id = data_store['SessionToken']['public']['broadcastHistory']['token']['session_id']
+
+        broadcasts = self._call_api(
+            'getUserBroadcastsPublic',
+            {'user_id': user_id, 'session_id': session_id},
+            user_name)['broadcasts']
+
+        broadcast_ids = [
+            broadcast['id'] for broadcast in broadcasts if broadcast.get('id')]
+
+        title = user.get('display_name') or user.get('username') or user_name
+        description = user.get('description')
 
         entries = [
             self.url_result(
-                'https://www.periscope.tv/%s/%s' % (user_id, broadcast['id']))
-            for broadcast in user_broadcasts.get('broadcasts', [])]
+                'https://www.periscope.tv/%s/%s' % (user_name, broadcast_id))
+            for broadcast_id in broadcast_ids]
 
-        return self.playlist_result(entries, user_id, username)
+        return self.playlist_result(entries, user_id, title, description)

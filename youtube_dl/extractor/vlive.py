@@ -1,8 +1,7 @@
 # coding: utf-8
-from __future__ import division, unicode_literals
+from __future__ import unicode_literals
 
 import re
-import time
 
 from .common import InfoExtractor
 from ..utils import (
@@ -10,6 +9,7 @@ from ..utils import (
     ExtractorError,
     float_or_none,
     int_or_none,
+    remove_start,
 )
 from ..compat import compat_urllib_parse_urlencode
 
@@ -17,17 +17,30 @@ from ..compat import compat_urllib_parse_urlencode
 class VLiveIE(InfoExtractor):
     IE_NAME = 'vlive'
     _VALID_URL = r'https?://(?:(?:www|m)\.)?vlive\.tv/video/(?P<id>[0-9]+)'
-    _TEST = {
+    _TESTS = [{
         'url': 'http://www.vlive.tv/video/1326',
         'md5': 'cc7314812855ce56de70a06a27314983',
         'info_dict': {
             'id': '1326',
             'ext': 'mp4',
-            'title': "[V] Girl's Day's Broadcast",
+            'title': "[V LIVE] Girl's Day's Broadcast",
             'creator': "Girl's Day",
             'view_count': int,
         },
-    }
+    }, {
+        'url': 'http://www.vlive.tv/video/16937',
+        'info_dict': {
+            'id': '16937',
+            'ext': 'mp4',
+            'title': '[V LIVE] 첸백시 걍방',
+            'creator': 'EXO',
+            'view_count': int,
+            'subtitles': 'mincount:12',
+        },
+        'params': {
+            'skip_download': True,
+        },
+    }]
 
     def _real_extract(self, url):
         video_id = self._match_id(url)
@@ -35,24 +48,12 @@ class VLiveIE(InfoExtractor):
         webpage = self._download_webpage(
             'http://www.vlive.tv/video/%s' % video_id, video_id)
 
-        # UTC+x - UTC+9 (KST)
-        tz = time.altzone if time.localtime().tm_isdst == 1 else time.timezone
-        tz_offset = -tz // 60 - 9 * 60
-        self._set_cookie('vlive.tv', 'timezoneOffset', '%d' % tz_offset)
-
-        status_params = self._download_json(
-            'http://www.vlive.tv/video/status?videoSeq=%s' % video_id,
-            video_id, 'Downloading JSON status',
-            headers={'Referer': url.encode('utf-8')})
-        status = status_params.get('status')
-        air_start = status_params.get('onAirStartAt', '')
-        is_live = status_params.get('isLive')
-
         video_params = self._search_regex(
-            r'vlive\.tv\.video\.ajax\.request\.handler\.init\((.+)\)',
+            r'\bvlive\.video\.init\(([^)]+)\)',
             webpage, 'video params')
-        live_params, long_video_id, key = re.split(
-            r'"\s*,\s*"', video_params)[1:4]
+        status, _, _, live_params, long_video_id, key = re.split(
+            r'"\s*,\s*"', video_params)[2:8]
+        status = remove_start(status, 'PRODUCT_')
 
         if status == 'LIVE_ON_AIR' or status == 'BIG_EVENT_ON_AIR':
             live_params = self._parse_json('"%s"' % live_params, video_id)
@@ -61,8 +62,6 @@ class VLiveIE(InfoExtractor):
         elif status == 'VOD_ON_AIR' or status == 'BIG_EVENT_INTRO':
             if long_video_id and key:
                 return self._replay(video_id, webpage, long_video_id, key)
-            elif is_live:
-                status = 'LIVE_END'
             else:
                 status = 'COMING_SOON'
 
@@ -70,7 +69,7 @@ class VLiveIE(InfoExtractor):
             raise ExtractorError('Uploading for replay. Please wait...',
                                  expected=True)
         elif status == 'COMING_SOON':
-            raise ExtractorError('Coming soon! %s' % air_start, expected=True)
+            raise ExtractorError('Coming soon!', expected=True)
         elif status == 'CANCELED':
             raise ExtractorError('We are sorry, '
                                  'but the live broadcast has been canceled.',
@@ -130,7 +129,7 @@ class VLiveIE(InfoExtractor):
 
         subtitles = {}
         for caption in playinfo.get('captions', {}).get('list', []):
-            lang = dict_get(caption, ('language', 'locale', 'country', 'label'))
+            lang = dict_get(caption, ('locale', 'language', 'country', 'label'))
             if lang and caption.get('source'):
                 subtitles[lang] = [{
                     'ext': 'vtt',

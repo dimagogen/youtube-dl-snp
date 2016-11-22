@@ -4,42 +4,37 @@ from __future__ import unicode_literals
 from .common import InfoExtractor
 
 
-class MiaopaiIE(InfoExtractor):
-    _VALID_URL = r'https?://(www\.|)(m\.|)miaopai\.com/show/(channel\/|)(?P<id>.+)\.html?'
-
+class MiaoPaiIE(InfoExtractor):
+    _VALID_URL = r'https?://(?:www\.)?miaopai\.com/show/(?P<id>[-A-Za-z0-9~_]+)'
     _TEST = {
-        'url': 'http://www.miaopai.com/show/wplYaViUNyWukb1dScu7Sg__.htm',
+        'url': 'http://www.miaopai.com/show/n~0hO7sfV1nBEw4Y29-Hqg__.htm',
+        'md5': '095ed3f1cd96b821add957bdc29f845b',
         'info_dict': {
-            'id': 'wplYaViUNyWukb1dScu7Sg__',
+            'id': 'n~0hO7sfV1nBEw4Y29-Hqg__',
             'ext': 'mp4',
-            'url': 're:^http://gslb.miaopai.com/stream/wplYaViUNyWukb1dScu7Sg__.mp4',
-            'title': '库里和联盟其他11位三分射手对比，简直是坐直升机',
-        },
-        'params': {
-            'skip_download': True,
-        },
+            'title': '西游记音乐会的秒拍视频',
+            'thumbnail': 're:^https?://.*/n~0hO7sfV1nBEw4Y29-Hqg___m.jpg',
+        }
     }
 
-    # Additional example videos from different sites
-    # http://www.miaopai.com/show/wplYaViUNyWukb1dScu7Sg__.htm
-    # http://m.miaopai.com/show/channel/DUq3rIh8nO8OnutQf5d-pw__
-    # http://miaopai.com/show/channel/DUq3rIh8nO8OnutQf5d-pw__
-    def _real_extract(self, miaopai_url):
-        identifier = self._match_id(miaopai_url)
+    _USER_AGENT_IPAD = 'Mozilla/5.0 (iPad; CPU OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1'
 
-        api_endpoint = 'http://api.miaopai.com/m/v2_channel.json?fillType=259&scid={0}&vend=miaopai'.format(
-            identifier
-        )
-        content = self._download_json(api_endpoint, identifier, fatal=True)
+    def _real_extract(self, url):
+        video_id = self._match_id(url)
+        webpage = self._download_webpage(
+            url, video_id, headers={'User-Agent': self._USER_AGENT_IPAD})
 
-        ext = content['result']['stream']['and']
-        title = content['result']['ext']['t']
-        full_video_url = content['result']['stream']['base']
-        short_video_url = self._search_regex(r'(.+)\?vend', full_video_url, 'Video url', fatal=True)
+        title = self._html_search_regex(
+            r'<title>([^<]+)</title>', webpage, 'title')
+        thumbnail = self._html_search_regex(
+            r'<div[^>]+class=(?P<q1>[\'"]).*\bvideo_img\b.*(?P=q1)[^>]+data-url=(?P<q2>[\'"])(?P<url>[^\'"]+)(?P=q2)',
+            webpage, 'thumbnail', fatal=False, group='url')
+        videos = self._parse_html5_media_entries(url, webpage, video_id)
+        info = videos[0]
 
-        return {
-            'id': identifier,
-            'url': short_video_url,
+        info.update({
+            'id': video_id,
             'title': title,
-            'ext': ext,
-        }
+            'thumbnail': thumbnail,
+        })
+        return info

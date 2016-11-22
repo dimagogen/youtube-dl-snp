@@ -335,6 +335,40 @@ class TestFormatSelection(unittest.TestCase):
             downloaded = ydl.downloaded_info_dicts[0]
             self.assertEqual(downloaded['format_id'], f1['format_id'])
 
+    def test_audio_only_extractor_format_selection(self):
+        # For extractors with incomplete formats (all formats are audio-only or
+        # video-only) best and worst should fallback to corresponding best/worst
+        # video-only or audio-only formats (as per
+        # https://github.com/rg3/youtube-dl/pull/5556)
+        formats = [
+            {'format_id': 'low', 'ext': 'mp3', 'preference': 1, 'vcodec': 'none', 'url': TEST_URL},
+            {'format_id': 'high', 'ext': 'mp3', 'preference': 2, 'vcodec': 'none', 'url': TEST_URL},
+        ]
+        info_dict = _make_result(formats)
+
+        ydl = YDL({'format': 'best'})
+        ydl.process_ie_result(info_dict.copy())
+        downloaded = ydl.downloaded_info_dicts[0]
+        self.assertEqual(downloaded['format_id'], 'high')
+
+        ydl = YDL({'format': 'worst'})
+        ydl.process_ie_result(info_dict.copy())
+        downloaded = ydl.downloaded_info_dicts[0]
+        self.assertEqual(downloaded['format_id'], 'low')
+
+    def test_format_not_available(self):
+        formats = [
+            {'format_id': 'regular', 'ext': 'mp4', 'height': 360, 'url': TEST_URL},
+            {'format_id': 'video', 'ext': 'mp4', 'height': 720, 'acodec': 'none', 'url': TEST_URL},
+        ]
+        info_dict = _make_result(formats)
+
+        # This must fail since complete video-audio format does not match filter
+        # and extractor does not provide incomplete only formats (i.e. only
+        # video-only or audio-only).
+        ydl = YDL({'format': 'best[height>360]'})
+        self.assertRaises(ExtractorError, ydl.process_ie_result, info_dict.copy())
+
     def test_invalid_format_specs(self):
         def assert_syntax_error(format_spec):
             ydl = YDL({'format': format_spec})
@@ -571,6 +605,7 @@ class TestYoutubeDL(unittest.TestCase):
             'extractor': 'TEST',
             'duration': 30,
             'filesize': 10 * 1024,
+            'playlist_id': '42',
         }
         second = {
             'id': '2',
@@ -580,6 +615,7 @@ class TestYoutubeDL(unittest.TestCase):
             'duration': 10,
             'description': 'foo',
             'filesize': 5 * 1024,
+            'playlist_id': '43',
         }
         videos = [first, second]
 
@@ -613,6 +649,10 @@ class TestYoutubeDL(unittest.TestCase):
         self.assertEqual(res, ['1', '2'])
 
         f = match_filter_func('filesize > 5KiB')
+        res = get_videos(f)
+        self.assertEqual(res, ['1'])
+
+        f = match_filter_func('playlist_id = 42')
         res = get_videos(f)
         self.assertEqual(res, ['1'])
 
